@@ -3,6 +3,7 @@ import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
 
 export struct SessionDraft {
     id: string,
+    group-id: string,  // "" = ungrouped
     name: string,
     kind: string,      // "ssh" | "serial" | "telnet"
     host: string,
@@ -19,6 +20,144 @@ export struct SessionDraft {
     stop-bits: int,
     parity: string,        // "none" | "odd" | "even"
     flow-control: string,  // "none" | "hardware" | "software"
+}
+
+// A dropdown selector component.
+// Uses selected-index (int) where -1 = "Ungrouped", 0+ = index into model-ids.
+// The list uses PopupWindow.show() so it floats above the dialog card without
+// being clipped by the parent Rectangle boundaries.
+component Dropdown inherits Rectangle {
+    in property <string> label;
+    in property <[string]> model-ids;
+    in property <[string]> model-names;
+    in-out property <int> selected-index: -1;
+    callback selected(int);
+    height: 32px;
+
+    property <bool> open: false;
+    property <int> item-count: model-ids.length + 1;
+    property <length> list-height: min(root.item-count, 7) * 30px + 8px;
+
+    // Trigger button
+    trigger := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: trigger-ta.has-hover || root.open ? Theme.accent : Theme.border-subtle;
+        background: Theme.bg-root;
+
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 6px;
+
+            Text {
+                text: root.label;
+                color: Theme.text-muted;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.selected-index >= 0 && root.selected-index < root.model-names.length
+                    ? root.model-names[root.selected-index]
+                    : @tr("Ungrouped");
+                color: Theme.text-primary;
+                font-size: Theme.fs-md;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: root.open ? "\u{E5CE}" : "\u{E5CF}";
+                font-family: "Material Icons";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+            }
+        }
+
+        trigger-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                if (root.open) {
+                    root.open = false;
+                } else {
+                    popup.show();
+                }
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: trigger.height + 2px;
+        width: trigger.width;
+        height: root.list-height;
+
+        Rectangle {
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000060;
+
+            Flickable {
+                viewport-height: root.item-count * 30px + 4px;
+
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+
+                    // "Ungrouped" option (index = -1)
+                    Rectangle {
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ug-ta.has-hover ? Theme.bg-hover : transparent;
+                        ug-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected(-1);
+                                root.open = false;
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: @tr("Ungrouped");
+                                color: root.selected-index == -1 ? Theme.accent : Theme.text-primary;
+                                font-size: Theme.fs-md;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    for gid[j] in root.model-ids : Rectangle {
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: item-ta.has-hover ? Theme.bg-hover : transparent;
+                        item-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected(j);
+                                root.open = false;
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: root.model-names[j];
+                                color: root.selected-index == j ? Theme.accent : Theme.text-primary;
+                                font-size: Theme.fs-md;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // A single segment in a segmented selector (auth toggle, baud presets, …).
@@ -52,6 +191,8 @@ export component SessionDialog inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <bool> is-editing: false;
     in-out property <string> draft-id;
+    in-out property <string> draft-group-id;
+    in-out property <int> draft-group-index: -1;
     in-out property <string> draft-name;
     in-out property <string> draft-kind: "ssh";
     in-out property <string> draft-host;
@@ -68,6 +209,9 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-stop-bits: "1";
     in-out property <string> draft-parity: "none";
     in-out property <string> draft-flow: "none";
+
+    in property <[string]> group-ids;
+    in property <[string]> group-names;
 
     callback submit(SessionDraft);
     callback cancel();
@@ -145,6 +289,28 @@ export component SessionDialog inherits Rectangle {
                 label: @tr("Name");
                 placeholder: @tr("e.g. production web-01");
                 value <=> root.draft-name;
+            }
+
+            // Group picker (always shown — "Ungrouped" is the default)
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Group");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                Dropdown {
+                    label: "";
+                    model-ids: root.group-ids;
+                    model-names: root.group-names;
+                    selected-index <=> root.draft-group-index;
+                    selected(idx) => {
+                        root.draft-group-index = idx;
+                        // Resolve index to group-id on selection.
+                        root.draft-group-id = idx >= 0 && idx < root.group-ids.length
+                            ? root.group-ids[idx] : "";
+                    }
+                }
             }
 
             // ── SSH / Telnet share host + port ──────────────────────────────
@@ -352,6 +518,7 @@ export component SessionDialog inherits Rectangle {
                     clicked => {
                         root.submit({
                             id: root.draft-id,
+                            group-id: root.draft-group-id,
                             name: root.draft-name,
                             kind: root.draft-kind,
                             host: root.draft-host,

@@ -230,3 +230,45 @@ msgstr "请确认"
 
 msgid "Confirm"
 msgstr "确认"
+
+msgid "Group"
+msgstr "分组"
+
+msgid "Ungrouped"
+msgstr "未分组"
+
+msgid "New group"
+msgstr "新建分组"
+
+msgid "Rename group"
+msgstr "重命名分组"
+
+msgid "Delete group"
+msgstr "删除分组"
+
+msgid "Move to group"
+msgstr "移动到分组"
+
+msgid "New session in group"
+msgstr "在分组中新建会话"
+
+msgid "Group name"
+msgstr "分组名称"
+
+msgid "No proxy — use $ALL_PROXY or connect directly"
+msgstr "不使用代理 — 使用 $ALL_PROXY 或直连"
+
+msgid "Format: host:port  (with auth: user:pass@host:port)"
+msgstr "格式: host:port（带认证: user:pass@host:port）"
+
+msgid "Export connections"
+msgstr "导出连接"
+
+msgid "Import connections"
+msgstr "导入连接"
+
+msgid "Switch to English"
+msgstr "Switch to English"
+
+msgid "Choose private key file"
+msgstr "选择私钥文件"

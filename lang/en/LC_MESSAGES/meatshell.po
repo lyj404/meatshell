@@ -230,3 +230,45 @@ msgstr "Please confirm"
 
 msgid "Confirm"
 msgstr "Confirm"
+
+msgid "Group"
+msgstr "Group"
+
+msgid "Ungrouped"
+msgstr "Ungrouped"
+
+msgid "New group"
+msgstr "New group"
+
+msgid "Rename group"
+msgstr "Rename group"
+
+msgid "Delete group"
+msgstr "Delete group"
+
+msgid "Move to group"
+msgstr "Move to group"
+
+msgid "New session in group"
+msgstr "New session in group"
+
+msgid "Group name"
+msgstr "Group name"
+
+msgid "No proxy — use $ALL_PROXY or connect directly"
+msgstr "No proxy — use $ALL_PROXY or connect directly"
+
+msgid "Format: host:port  (with auth: user:pass@host:port)"
+msgstr "Format: host:port  (with auth: user:pass@host:port)"
+
+msgid "Export connections"
+msgstr "Export connections"
+
+msgid "Import connections"
+msgstr "Import connections"
+
+msgid "Switch to English"
+msgstr "Switch to English"
+
+msgid "Choose private key file"
+msgstr "Choose private key file"

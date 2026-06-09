@@ -1,0 +1,212 @@
+import { Theme } from "theme.slint";
+import { GhostButton, PrimaryButton } from "widgets.slint";
+
+// Reuse the same Dropdown component as session_dialog.slint.
+component Dropdown inherits Rectangle {
+    in property <string> label;
+    in property <[string]> model-ids;
+    in property <[string]> model-names;
+    in-out property <int> selected-index: -1;
+    callback selected(int);
+    height: 32px;
+
+    property <bool> open: false;
+    property <int> item-count: model-ids.length + 1;
+    property <length> list-height: min(root.item-count, 7) * 30px + 8px;
+
+    trigger := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: trigger-ta.has-hover || root.open ? Theme.accent : Theme.border-subtle;
+        background: Theme.bg-root;
+
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 6px;
+
+            Text {
+                text: root.label;
+                color: Theme.text-muted;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.selected-index >= 0 && root.selected-index < root.model-names.length
+                    ? root.model-names[root.selected-index]
+                    : @tr("Ungrouped");
+                color: Theme.text-primary;
+                font-size: Theme.fs-md;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: root.open ? "\u{E5CE}" : "\u{E5CF}";
+                font-family: "Material Icons";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+            }
+        }
+
+        trigger-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                if (root.open) {
+                    root.open = false;
+                } else {
+                    popup.show();
+                }
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: trigger.height + 2px;
+        width: trigger.width;
+        height: root.list-height;
+
+        Rectangle {
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000060;
+
+            Flickable {
+                viewport-height: root.item-count * 30px + 4px;
+
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+
+                    Rectangle {
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ug-ta.has-hover ? Theme.bg-hover : transparent;
+                        ug-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected(-1);
+                                root.open = false;
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: @tr("Ungrouped");
+                                color: root.selected-index == -1 ? Theme.accent : Theme.text-primary;
+                                font-size: Theme.fs-md;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    for gid[j] in root.model-ids : Rectangle {
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: item-ta.has-hover ? Theme.bg-hover : transparent;
+                        item-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.selected(j);
+                                root.open = false;
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: root.model-names[j];
+                                color: root.selected-index == j ? Theme.accent : Theme.text-primary;
+                                font-size: Theme.fs-md;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Modal dialog for moving a session to a different group.
+export component MoveToGroupDialog inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <[string]> group-ids;
+    in property <[string]> group-names;
+    in property <string> session-name;
+    in-out property <int> selected-index: -1;
+
+    callback submit(int /* selected-index */);
+    callback cancel();
+
+    visible: is-open;
+    background: #000000aa;
+
+    TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        width: 360px;
+        height: card.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+
+        TouchArea { width: 100%; height: 100%; }
+
+        card := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: @tr("Move to group");
+                color: Theme.text-primary;
+                font-size: Theme.fs-xl;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.session-name;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-md;
+                overflow: elide;
+            }
+
+            Dropdown {
+                label: "";
+                model-ids: root.group-ids;
+                model-names: root.group-names;
+                selected-index <=> root.selected-index;
+                selected(idx) => { root.selected-index = idx; }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                GhostButton {
+                    text: @tr("Cancel");
+                    clicked => { root.cancel(); }
+                }
+                PrimaryButton {
+                    text: @tr("Confirm");
+                    clicked => { root.submit(root.selected-index); }
+                }
+            }
+        }
+    }
+}

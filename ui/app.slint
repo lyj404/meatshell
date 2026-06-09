@@ -12,13 +12,15 @@ import "fonts/MaterialIcons-Regular.ttf";
 import { Theme } from "theme.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
-import { Welcome, SessionInfo } from "welcome.slint";
+import { Welcome, SessionInfo, ListItem } from "welcome.slint";
 import { SessionDialog, SessionDraft } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
+import { InputDialog } from "input_dialog.slint";
+import { MoveToGroupDialog } from "move_to_group_dialog.slint";
 import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
 
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode }
+export { SessionInfo, SessionDraft, ListItem, TabInfo, SftpEntry, SftpTreeNode }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -104,7 +106,9 @@ export component AppWindow inherits Window {
     callback set-language(string);           // switch UI language ("zh" / "en")
 
     // --- Session list ------------------------------------------------------
-    in property <[SessionInfo]> sessions;
+    in property <[ListItem]> items;
+    in property <[string]> group-ids;
+    in property <[string]> group-names;
 
     // --- Tabs --------------------------------------------------------------
     in property <[TabInfo]> tabs;
@@ -131,6 +135,22 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-stop-bits: "1";
     in-out property <string> dialog-parity: "none";
     in-out property <string> dialog-flow: "none";
+    in-out property <string> dialog-group-id;
+    in-out property <int> dialog-group-index: -1;
+
+    // Input dialog state (for group rename / new group).
+    in-out property <bool> input-dialog-open: false;
+    in property <string> input-dialog-title;
+    in property <string> input-dialog-label;
+    in property <string> input-dialog-placeholder;
+    in-out property <string> input-dialog-value;
+    callback input-dialog-submit(string);
+
+    // Move-to-group dialog state.
+    in-out property <bool> move-dialog-open: false;
+    in property <string> move-dialog-session-name;
+    in-out property <int> move-dialog-index: -1;
+    callback move-dialog-submit(int);
 
     // Delete-confirmation modal state (#28).
     in-out property <bool> confirm-delete-open: false;
@@ -149,6 +169,12 @@ export component AppWindow inherits Window {
     callback session-dialog-submit(SessionDraft);
     callback session-dialog-cancel();
     callback session-dialog-pick-key();
+    callback toggle-group(string);
+    callback rename-group(string);
+    callback delete-group(string);
+    callback new-group();
+    callback new-session-in-group(string);
+    callback move-session(string);
 
     callback tab-selected(string);
     callback tab-closed(string);
@@ -244,13 +270,19 @@ export component AppWindow inherits Window {
 
                 // Welcome tab
                 if root.active-tab-id == "welcome" : Welcome {
-                    sessions: root.sessions;
+                    items: root.items;
                     import-hint: root.ssh-import-hint;
                     new-session => { root.new-session-clicked(); }
+                    new-group => { root.new-group(); }
                     import-ssh-config => { root.import-ssh-config(); }
                     connect-session(id) => { root.connect-session(id); }
                     edit-session(id) => { root.edit-session(id); }
                     remove-session(id) => { root.remove-session(id); }
+                    toggle-group(id) => { root.toggle-group(id); }
+                    rename-group(id) => { root.rename-group(id); }
+                    delete-group(id) => { root.delete-group(id); }
+                    new-session-in-group(id) => { root.new-session-in-group(id); }
+                    move-session(sid) => { root.move-session(sid); }
                 }
 
                 // Terminal tabs — one TerminalView per terminal state. Only
@@ -806,9 +838,39 @@ export component AppWindow inherits Window {
         draft-stop-bits <=> root.dialog-stop-bits;
         draft-parity <=> root.dialog-parity;
         draft-flow <=> root.dialog-flow;
+        draft-group-id <=> root.dialog-group-id;
+        draft-group-index <=> root.dialog-group-index;
+        group-ids: root.group-ids;
+        group-names: root.group-names;
         submit(draft) => { root.session-dialog-submit(draft); }
         cancel => { root.session-dialog-cancel(); }
         pick-key-file => { root.session-dialog-pick-key(); }
+    }
+
+    // --- Input dialog (group rename / new group) ----------------------------
+    InputDialog {
+        width: parent.width;
+        height: parent.height;
+        is-open <=> root.input-dialog-open;
+        title: root.input-dialog-title;
+        label: root.input-dialog-label;
+        placeholder: root.input-dialog-placeholder;
+        input-value <=> root.input-dialog-value;
+        submit(val) => { root.input-dialog-submit(val); }
+        cancel => { root.input-dialog-open = false; }
+    }
+
+    // --- Move to group dialog -----------------------------------------------
+    MoveToGroupDialog {
+        width: parent.width;
+        height: parent.height;
+        is-open <=> root.move-dialog-open;
+        session-name: root.move-dialog-session-name;
+        group-ids: root.group-ids;
+        group-names: root.group-names;
+        selected-index <=> root.move-dialog-index;
+        submit(idx) => { root.move-dialog-submit(idx); }
+        cancel => { root.move-dialog-open = false; }
     }
 
     // --- Delete confirmation (#28) ----------------------------------------

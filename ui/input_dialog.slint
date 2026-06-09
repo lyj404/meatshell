@@ -1,0 +1,73 @@
+import { Theme } from "theme.slint";
+import { LabeledInput, GhostButton, PrimaryButton } from "widgets.slint";
+
+// A modal dialog with a single text input, styled to match ConfirmDialog.
+// Emits `submit(value)` on confirm or `cancel` on dismiss.
+export component InputDialog inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in property <string> title: @tr("Input");
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> input-value;
+    callback submit(string);
+    callback cancel();
+
+    visible: is-open;
+    background: #000000aa;
+
+    // Backdrop click cancels.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        width: 380px;
+        height: card.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+
+        // Swallow clicks inside the card.
+        TouchArea { width: 100%; height: 100%; }
+
+        card := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xl;
+                font-weight: 600;
+            }
+
+            LabeledInput {
+                label: root.label;
+                placeholder: root.placeholder;
+                value <=> root.input-value;
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                GhostButton {
+                    text: @tr("Cancel");
+                    clicked => { root.cancel(); }
+                }
+                PrimaryButton {
+                    text: @tr("Confirm");
+                    clicked => { root.submit(root.input-value); }
+                }
+            }
+        }
+    }
+}

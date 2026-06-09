@@ -125,6 +125,17 @@ fn default_flow() -> String {
     "none".to_string()
 }
 
+/// A named folder / group for organising sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default)]
+    pub order: i32,
+}
+
 /// How a session authenticates.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -153,6 +164,9 @@ impl AuthMethod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    /// Parent group id. Empty string = ungrouped.
+    #[serde(default)]
+    pub group_id: String,
     pub name: String,
     pub host: String,
     pub port: u16,
@@ -196,6 +210,7 @@ impl Session {
     pub fn new_empty() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            group_id: String::new(),
             name: String::new(),
             host: String::new(),
             port: 22,
@@ -221,6 +236,8 @@ impl Session {
 pub struct ConfigFile {
     #[serde(default)]
     pub sessions: Vec<Session>,
+    #[serde(default)]
+    pub groups: Vec<SessionGroup>,
     /// Preset SFTP download directory. Empty = ask each time.
     #[serde(default)]
     pub download_dir: String,
@@ -244,6 +261,8 @@ struct ExportFile {
     /// Format marker / version so the schema can evolve later.
     meatshell_export: u32,
     sessions: Vec<Session>,
+    #[serde(default)]
+    groups: Vec<SessionGroup>,
 }
 
 pub struct ConfigStore {
@@ -420,6 +439,39 @@ impl ConfigStore {
         self.cache.sessions.iter().find(|s| s.id == id)
     }
 
+    pub fn groups(&self) -> &[SessionGroup] {
+        &self.cache.groups
+    }
+
+    pub fn upsert_group(&mut self, group: SessionGroup) {
+        if let Some(existing) = self.cache.groups.iter_mut().find(|g| g.id == group.id) {
+            *existing = group;
+        } else {
+            self.cache.groups.push(group);
+        }
+    }
+
+    pub fn remove_group(&mut self, id: &str) {
+        for session in &mut self.cache.sessions {
+            if session.group_id == id {
+                session.group_id.clear();
+            }
+        }
+        self.cache.groups.retain(|g| g.id != id);
+    }
+
+    pub fn move_session_to_group(&mut self, session_id: &str, group_id: &str) {
+        if let Some(s) = self.cache.sessions.iter_mut().find(|s| s.id == session_id) {
+            s.group_id = group_id.to_string();
+        }
+    }
+
+    pub fn rename_group(&mut self, id: &str, new_name: &str) {
+        if let Some(g) = self.cache.groups.iter_mut().find(|g| g.id == id) {
+            g.name = new_name.to_string();
+        }
+    }
+
     pub fn download_dir(&self) -> &str {
         &self.cache.download_dir
     }
@@ -510,6 +562,7 @@ impl ConfigStore {
         let mut out = ExportFile {
             meatshell_export: 1,
             sessions: self.cache.sessions.clone(),
+            groups: self.cache.groups.clone(),
         };
         for s in &mut out.sessions {
             // `cache` holds plaintext passwords; obfuscate with the export key.
@@ -534,6 +587,25 @@ impl ConfigStore {
         let file: ExportFile = serde_json::from_str(&raw)
             .context("not a valid meatshell export file")?;
 
+        // Import groups first, building a mapping from old id -> new id.
+        let mut group_id_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for g in file.groups {
+            if let Some(existing) = self.cache.groups.iter().find(|x| x.name == g.name) {
+                // Group with same name already exists — reuse its id.
+                group_id_map.insert(g.id, existing.id.clone());
+            } else {
+                let new_id = Uuid::new_v4().to_string();
+                group_id_map.insert(g.id, new_id.clone());
+                self.cache.groups.push(SessionGroup {
+                    id: new_id,
+                    name: g.name,
+                    collapsed: g.collapsed,
+                    order: g.order,
+                });
+            }
+        }
+
         let mut added = 0usize;
         let mut skipped = 0usize;
         for mut s in file.sessions {
@@ -552,6 +624,14 @@ impl ConfigStore {
                 continue;
             }
             s.id = Uuid::new_v4().to_string();
+            // Remap group_id to the new group id if one was imported.
+            if !s.group_id.is_empty() {
+                if let Some(new_gid) = group_id_map.get(&s.group_id) {
+                    s.group_id = new_gid.clone();
+                } else {
+                    s.group_id.clear();
+                }
+            }
             self.cache.sessions.push(s);
             added += 1;
         }
@@ -606,6 +686,92 @@ mod tests {
 
         // Re-importing the same file skips the duplicate.
         assert_eq!(b.import_from(&export_path).unwrap(), (0, 1));
+
+        let _ = std::fs::remove_file(&export_path);
+        let _ = std::fs::remove_file(&a.path);
+        let _ = std::fs::remove_file(&b.path);
+    }
+
+    #[test]
+    fn export_import_roundtrip_preserves_groups() {
+        let mut a = temp_store();
+        let gid = "group-aaa".to_string();
+        a.cache.groups.push(SessionGroup {
+            id: gid.clone(),
+            name: "Production".into(),
+            collapsed: false,
+            order: 0,
+        });
+        a.cache.sessions.push(Session {
+            name: "web-01".into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            user: "root".into(),
+            group_id: gid.clone(),
+            ..Session::new_empty()
+        });
+        a.cache.sessions.push(Session {
+            name: "web-02".into(),
+            host: "10.0.0.2".into(),
+            port: 22,
+            user: "root".into(),
+            group_id: gid,
+            ..Session::new_empty()
+        });
+
+        let export_path =
+            std::env::temp_dir().join(format!("ms-exp-grp-{}.json", Uuid::new_v4()));
+        assert_eq!(a.export_to(&export_path).unwrap(), 2);
+
+        // Import into a fresh store — groups are recreated, sessions remapped.
+        let mut b = temp_store();
+        assert_eq!(b.import_from(&export_path).unwrap(), (2, 0));
+        assert_eq!(b.cache.groups.len(), 1);
+        assert_eq!(b.cache.groups[0].name, "Production");
+        // Sessions should point to the new group id.
+        let new_gid = &b.cache.groups[0].id;
+        assert!(b.cache.sessions.iter().all(|s| s.group_id == *new_gid));
+
+        let _ = std::fs::remove_file(&export_path);
+        let _ = std::fs::remove_file(&a.path);
+        let _ = std::fs::remove_file(&b.path);
+    }
+
+    #[test]
+    fn import_merges_groups_by_name() {
+        let mut a = temp_store();
+        a.cache.groups.push(SessionGroup {
+            id: "g1".into(),
+            name: "Lab".into(),
+            collapsed: false,
+            order: 0,
+        });
+        a.cache.sessions.push(Session {
+            name: "lab-box".into(),
+            host: "192.168.1.1".into(),
+            group_id: "g1".into(),
+            ..Session::new_empty()
+        });
+
+        let export_path =
+            std::env::temp_dir().join(format!("ms-exp-merge-{}.json", Uuid::new_v4()));
+        a.export_to(&export_path).unwrap();
+
+        // Store b already has a group named "Lab".
+        let mut b = temp_store();
+        let existing_gid = "existing-lab".to_string();
+        b.cache.groups.push(SessionGroup {
+            id: existing_gid.clone(),
+            name: "Lab".into(),
+            collapsed: false,
+            order: 0,
+        });
+        b.import_from(&export_path).unwrap();
+
+        // Should NOT create a duplicate group — reuses existing.
+        assert_eq!(b.cache.groups.len(), 1);
+        // Imported session should be mapped to the existing group.
+        assert_eq!(b.cache.sessions[0].group_id, existing_gid);
 
         let _ = std::fs::remove_file(&export_path);
         let _ = std::fs::remove_file(&a.path);

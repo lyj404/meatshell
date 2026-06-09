@@ -206,9 +206,11 @@ pub fn run() -> Result<()> {
         window.set_dark_mode(is_dark);
     }
 
-    let sessions_model: Rc<VecModel<SessionInfo>> = Rc::new(VecModel::default());
-    window.set_sessions(ModelRc::from(sessions_model.clone()));
-    sync_sessions_to_model(&store.borrow(), &sessions_model);
+    let items_model: Rc<VecModel<ListItem>> = Rc::new(VecModel::default());
+    window.set_items(ModelRc::from(items_model.clone()));
+    sync_items_to_model(&store.borrow(), &items_model);
+    // Also set group-ids and group-names for the session dialog picker.
+    sync_group_names(&store.borrow(), &window);
 
     let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
     tabs_model.push(TabInfo {
@@ -233,7 +235,7 @@ pub fn run() -> Result<()> {
     wire_session_callbacks(
         &window,
         store.clone(),
-        sessions_model.clone(),
+        items_model.clone(),
         tabs_model.clone(),
         terminals_model.clone(),
         handles.clone(),
@@ -622,25 +624,98 @@ fn handle_file_drop(_win: &AppWindow, _sftp_handles: &SftpHandles, _path: String
 // Model helpers
 // ---------------------------------------------------------------------------
 
-fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
-    let rows: Vec<SessionInfo> = store
-        .sessions()
+fn group_index_for(store: &ConfigStore, group_id: &str) -> i32 {
+    if group_id.is_empty() {
+        return -1;
+    }
+    store
+        .groups()
         .iter()
-        .map(|s| SessionInfo {
-            id: s.id.clone().into(),
-            name: s.name.clone().into(),
-            host: s.host.clone().into(),
-            port: s.port as i32,
-            user: s.user.clone().into(),
-            auth: s.auth.as_str().into(),
-            last_used: s
-                .last_used
-                .clone()
-                .unwrap_or_else(|| "never".to_string())
-                .into(),
-        })
-        .collect();
-    model.set_vec(rows);
+        .position(|g| g.id == group_id)
+        .map(|i| i as i32)
+        .unwrap_or(-1)
+}
+
+fn session_to_list_item(s: &crate::config::Session) -> ListItem {
+    ListItem {
+        id: s.id.clone().into(),
+        kind: "session".into(),
+        name: s.name.clone().into(),
+        host: s.host.clone().into(),
+        port: s.port as i32,
+        user: s.user.clone().into(),
+        auth: s.auth.as_str().into(),
+        last_used: s
+            .last_used
+            .clone()
+            .unwrap_or_else(|| "never".to_string())
+            .into(),
+        collapsed: false,
+        count: 0,
+        group_id: s.group_id.clone().into(),
+    }
+}
+
+fn sync_items_to_model(store: &ConfigStore, model: &VecModel<ListItem>) {
+    let groups = store.groups();
+    let sessions = store.sessions();
+    let mut items: Vec<ListItem> = Vec::new();
+
+    let mut sorted_groups: Vec<_> = groups.iter().collect();
+    sorted_groups.sort_by_key(|g| g.order);
+
+    for group in &sorted_groups {
+        let count = sessions.iter().filter(|s| s.group_id == group.id).count();
+        items.push(ListItem {
+            id: group.id.clone().into(),
+            kind: "group".into(),
+            name: group.name.clone().into(),
+            host: "".into(),
+            port: 0,
+            user: "".into(),
+            auth: "".into(),
+            last_used: "".into(),
+            collapsed: group.collapsed,
+            count: count as i32,
+            group_id: "".into(),
+        });
+        if !group.collapsed {
+            for s in sessions.iter().filter(|s| s.group_id == group.id) {
+                items.push(session_to_list_item(s));
+            }
+        }
+    }
+
+    // Ungrouped sessions last.
+    let ungrouped: Vec<_> = sessions.iter().filter(|s| s.group_id.is_empty()).collect();
+    if !ungrouped.is_empty() {
+        items.push(ListItem {
+            id: "".into(),
+            kind: "group".into(),
+            name: t("未分组", "Ungrouped").into(),
+            host: "".into(),
+            port: 0,
+            user: "".into(),
+            auth: "".into(),
+            last_used: "".into(),
+            collapsed: false,
+            count: ungrouped.len() as i32,
+            group_id: "".into(),
+        });
+        for s in ungrouped {
+            items.push(session_to_list_item(s));
+        }
+    }
+
+    model.set_vec(items);
+}
+
+fn sync_group_names(store: &ConfigStore, window: &AppWindow) {
+    let groups = store.groups();
+    let ids: Vec<SharedString> = groups.iter().map(|g| g.id.clone().into()).collect();
+    let names: Vec<SharedString> = groups.iter().map(|g| g.name.clone().into()).collect();
+    window.set_group_ids(ModelRc::from(Rc::new(VecModel::from(ids))));
+    window.set_group_names(ModelRc::from(Rc::new(VecModel::from(names))));
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +725,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
 fn wire_session_callbacks(
     window: &AppWindow,
     store: Rc<RefCell<ConfigStore>>,
-    sessions_model: Rc<VecModel<SessionInfo>>,
+    items_model: Rc<VecModel<ListItem>>,
     tabs_model: Rc<VecModel<TabInfo>>,
     terminals_model: Rc<VecModel<TerminalState>>,
     handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
@@ -685,6 +760,8 @@ fn wire_session_callbacks(
             w.set_dialog_stop_bits("1".into());
             w.set_dialog_parity("none".into());
             w.set_dialog_flow("none".into());
+            w.set_dialog_group_id("".into());
+            w.set_dialog_group_index(-1);
             w.set_dialog_editing(false);
             w.set_dialog_open(true);
         }
@@ -694,7 +771,7 @@ fn wire_session_callbacks(
     {
         let weak = window.as_weak();
         let store = store.clone();
-        let sessions_model = sessions_model.clone();
+        let items_model = items_model.clone();
         window.on_import_ssh_config(move || {
             let hosts = crate::ssh_config::parse_default();
             let mut added = 0usize;
@@ -735,7 +812,7 @@ fn wire_session_callbacks(
                     let _ = s.save();
                 }
             }
-            sync_sessions_to_model(&store.borrow(), &sessions_model);
+            sync_items_to_model(&store.borrow(), &items_model);
             if let Some(w) = weak.upgrade() {
                 let hint = if added > 0 {
                     format!("{} {}", t("已导入", "imported"), added)
@@ -774,7 +851,7 @@ fn wire_session_callbacks(
     {
         let weak = window.as_weak();
         let store = store.clone();
-        let sessions_model = sessions_model.clone();
+        let items_model = items_model.clone();
         window.on_import_sessions(move || {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("JSON", &["json"])
@@ -784,7 +861,8 @@ fn wire_session_callbacks(
                 if let Some(w) = weak.upgrade() {
                     let hint = match res {
                         Ok((added, skipped)) => {
-                            sync_sessions_to_model(&store.borrow(), &sessions_model);
+                            sync_items_to_model(&store.borrow(), &items_model);
+                            sync_group_names(&store.borrow(), &w);
                             format!(
                                 "{} {} / {} {}",
                                 t("已导入", "imported"),
@@ -830,6 +908,8 @@ fn wire_session_callbacks(
                 w.set_dialog_stop_bits(session.stop_bits.to_string().into());
                 w.set_dialog_parity(session.parity.clone().into());
                 w.set_dialog_flow(session.flow_control.clone().into());
+                w.set_dialog_group_id(session.group_id.clone().into());
+                w.set_dialog_group_index(group_index_for(&store, &session.group_id));
                 w.set_dialog_editing(true);
                 w.set_dialog_open(true);
             }
@@ -840,7 +920,7 @@ fn wire_session_callbacks(
     {
         let weak = window.as_weak();
         let store = store.clone();
-        let sessions_model = sessions_model.clone();
+        let items_model = items_model.clone();
         window.on_remove_session(move |id: SharedString| {
             {
                 let mut s = store.borrow_mut();
@@ -849,10 +929,10 @@ fn wire_session_callbacks(
                     tracing::warn!("failed to save config: {err:#}");
                 }
             }
-            sync_sessions_to_model(&store.borrow(), &sessions_model);
+            sync_items_to_model(&store.borrow(), &items_model);
             if let Some(w) = weak.upgrade() {
                 // Touch a property so the list re-renders reliably.
-                let _ = w.get_sessions();
+                let _ = w.get_items();
             }
         });
     }
@@ -861,7 +941,7 @@ fn wire_session_callbacks(
     {
         let weak = window.as_weak();
         let store = store.clone();
-        let sessions_model = sessions_model.clone();
+        let items_model = items_model.clone();
         window.on_session_dialog_submit(move |draft: SessionDraft| {
             let id = draft.id.to_string();
             // The edit dialog never echoes the real password (issue #10): a blank
@@ -892,6 +972,7 @@ fn wire_session_callbacks(
             };
             let new_session = Session {
                 id,
+                group_id: draft.group_id.to_string(),
                 name: if draft.name.is_empty() {
                     auto_name
                 } else {
@@ -929,7 +1010,7 @@ fn wire_session_callbacks(
                     tracing::warn!("failed to save config: {err:#}");
                 }
             }
-            sync_sessions_to_model(&store.borrow(), &sessions_model);
+            sync_items_to_model(&store.borrow(), &items_model);
             if let Some(w) = weak.upgrade() {
                 w.set_dialog_open(false);
             }
@@ -1216,6 +1297,218 @@ fn wire_session_callbacks(
                         }
                     }
                 });
+            }
+        });
+    }
+
+    // Toggle group collapse/expand.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let items_model = items_model.clone();
+        window.on_toggle_group(move |id: SharedString| {
+            let id = id.to_string();
+            {
+                let mut s = store.borrow_mut();
+                if let Some(g) = s.groups().iter().find(|g| g.id == id).cloned() {
+                    let mut updated = g;
+                    updated.collapsed = !updated.collapsed;
+                    s.upsert_group(updated);
+                    let _ = s.save();
+                }
+            }
+            sync_items_to_model(&store.borrow(), &items_model);
+        });
+    }
+
+    // Track whether the input dialog is for "new group" (empty string) or
+    // "rename group" (stores the group id being renamed).
+    let input_dialog_target: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let move_sid: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    // New group — open the input dialog.
+    {
+        let weak = window.as_weak();
+        let target = input_dialog_target.clone();
+        window.on_new_group(move || {
+            if let Some(w) = weak.upgrade() {
+                *target.borrow_mut() = String::new(); // empty = new group mode
+                w.set_input_dialog_title(t("新建分组", "New group").into());
+                w.set_input_dialog_label(t("分组名称", "Group name").into());
+                w.set_input_dialog_placeholder(t("例如：生产环境", "e.g. Production").into());
+                w.set_input_dialog_value("".into());
+                w.set_input_dialog_open(true);
+            }
+        });
+    }
+
+    // Delete group.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let items_model = items_model.clone();
+        window.on_delete_group(move |id: SharedString| {
+            {
+                let mut s = store.borrow_mut();
+                s.remove_group(&id.to_string());
+                let _ = s.save();
+            }
+            sync_items_to_model(&store.borrow(), &items_model);
+            sync_group_names(&store.borrow(), &weak.upgrade().unwrap());
+        });
+    }
+
+    // Rename group — open the input dialog pre-filled with the current name.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let target = input_dialog_target.clone();
+        window.on_rename_group(move |id: SharedString| {
+            let id = id.to_string();
+            let current_name = store
+                .borrow()
+                .groups()
+                .iter()
+                .find(|g| g.id == id)
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            if let Some(w) = weak.upgrade() {
+                *target.borrow_mut() = id; // non-empty = rename mode, stores group id
+                w.set_input_dialog_title(t("重命名分组", "Rename group").into());
+                w.set_input_dialog_label(t("分组名称", "Group name").into());
+                w.set_input_dialog_placeholder("".into());
+                w.set_input_dialog_value(current_name.into());
+                w.set_input_dialog_open(true);
+            }
+        });
+    }
+
+    // Input dialog submit — handles both new group and rename group.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let items_model = items_model.clone();
+        let target = input_dialog_target.clone();
+        window.on_input_dialog_submit(move |value: SharedString| {
+            let name = value.to_string().trim().to_string();
+            if name.is_empty() {
+                if let Some(w) = weak.upgrade() {
+                    w.set_input_dialog_open(false);
+                }
+                return;
+            }
+            let target_id = target.borrow().clone();
+            if target_id.is_empty() {
+                // New group mode.
+                let group = crate::config::SessionGroup {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name,
+                    collapsed: false,
+                    order: store.borrow().groups().len() as i32,
+                };
+                {
+                    let mut s = store.borrow_mut();
+                    s.upsert_group(group);
+                    let _ = s.save();
+                }
+            } else {
+                // Rename group mode.
+                store.borrow_mut().rename_group(&target_id, &name);
+                let _ = store.borrow().save();
+            }
+            sync_items_to_model(&store.borrow(), &items_model);
+            if let Some(w) = weak.upgrade() {
+                sync_group_names(&store.borrow(), &w);
+                w.set_input_dialog_open(false);
+            }
+        });
+    }
+
+    // New session in group.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        window.on_new_session_in_group(move |group_id: SharedString| {
+            if let Some(w) = weak.upgrade() {
+                let idx = group_index_for(&store.borrow(), &group_id);
+                let empty = Session::new_empty();
+                w.set_dialog_id(empty.id.into());
+                w.set_dialog_name("".into());
+                w.set_dialog_host("".into());
+                w.set_dialog_port("22".into());
+                w.set_dialog_user("root".into());
+                w.set_dialog_auth("password".into());
+                w.set_dialog_password("".into());
+                w.set_dialog_key_path("".into());
+                w.set_dialog_proxy_type("none".into());
+                w.set_dialog_proxy_hostport("".into());
+                w.set_dialog_kind("ssh".into());
+                w.set_dialog_serial_port("".into());
+                w.set_dialog_baud("115200".into());
+                w.set_dialog_data_bits("8".into());
+                w.set_dialog_stop_bits("1".into());
+                w.set_dialog_parity("none".into());
+                w.set_dialog_flow("none".into());
+                w.set_dialog_group_id(group_id.clone());
+                w.set_dialog_group_index(idx);
+                w.set_dialog_editing(false);
+                w.set_dialog_open(true);
+            }
+        });
+    }
+
+    // Move session to group — open the dialog.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let move_sid = move_sid.clone();
+        window.on_move_session(move |session_id: SharedString| {
+            if let Some(w) = weak.upgrade() {
+                let sid = session_id.to_string();
+                let s = store.borrow();
+                let (name, current_gid) = s
+                    .sessions()
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .map(|s| (s.name.clone(), s.group_id.clone()))
+                    .unwrap_or_default();
+                let idx = group_index_for(&s, &current_gid);
+                drop(s);
+                *move_sid.borrow_mut() = sid;
+                w.set_move_dialog_session_name(name.into());
+                w.set_move_dialog_index(idx);
+                w.set_move_dialog_open(true);
+            }
+        });
+    }
+
+    // Move-to-group dialog submit — perform the actual move.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let items_model = items_model.clone();
+        let move_sid = move_sid.clone();
+        window.on_move_dialog_submit(move |idx: i32| {
+            let sid = move_sid.borrow().clone();
+            if sid.is_empty() {
+                return;
+            }
+            let group_id = {
+                let s = store.borrow();
+                if idx >= 0 && (idx as usize) < s.groups().len() {
+                    s.groups()[idx as usize].id.clone()
+                } else {
+                    String::new()
+                }
+            };
+            {
+                let mut s = store.borrow_mut();
+                s.move_session_to_group(&sid, &group_id);
+                let _ = s.save();
+            }
+            sync_items_to_model(&store.borrow(), &items_model);
+            if let Some(w) = weak.upgrade() {
+                w.set_move_dialog_open(false);
             }
         });
     }
