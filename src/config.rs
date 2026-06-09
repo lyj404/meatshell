@@ -520,10 +520,25 @@ impl ConfigStore {
         let raw = serde_json::to_string_pretty(&disk)?;
         // Write to a sibling temp file then rename — cheap atomicity.
         let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, &raw)
+        Self::write_private(&tmp, raw.as_bytes())
             .with_context(|| format!("failed to write {}", tmp.display()))?;
         fs::rename(&tmp, &self.path)
             .with_context(|| format!("failed to finalise {}", self.path.display()))?;
+        Ok(())
+    }
+
+    /// Write `data` to `path` with mode 0600 on Unix (owner read/write only).
+    fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+        use std::fs::OpenOptions;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut builder = OpenOptions::new();
+        builder.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        builder.mode(0o600);
+        let mut f = builder.open(path)?;
+        use std::io::Write;
+        f.write_all(data)?;
         Ok(())
     }
 
@@ -574,7 +589,8 @@ impl ConfigStore {
             s.last_used = None;
         }
         let raw = serde_json::to_string_pretty(&out)?;
-        fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
+        Self::write_private(path, raw.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(out.sessions.len())
     }
 
