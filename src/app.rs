@@ -686,25 +686,9 @@ fn sync_items_to_model(store: &ConfigStore, model: &VecModel<ListItem>) {
         }
     }
 
-    // Ungrouped sessions last.
-    let ungrouped: Vec<_> = sessions.iter().filter(|s| s.group_id.is_empty()).collect();
-    if !ungrouped.is_empty() {
-        items.push(ListItem {
-            id: "".into(),
-            kind: "group".into(),
-            name: t("未分组", "Ungrouped").into(),
-            host: "".into(),
-            port: 0,
-            user: "".into(),
-            auth: "".into(),
-            last_used: "".into(),
-            collapsed: false,
-            count: ungrouped.len() as i32,
-            group_id: "".into(),
-        });
-        for s in ungrouped {
-            items.push(session_to_list_item(s));
-        }
+    // Ungrouped sessions last — always flat, never wrapped in a folder.
+    for s in sessions.iter().filter(|s| s.group_id.is_empty()) {
+        items.push(session_to_list_item(s));
     }
 
     model.set_vec(items);
